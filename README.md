@@ -2,6 +2,7 @@
 
 Go library provides a framework for building agentic systems, allowing for the creation of modular, composable, and potentially asynchronous workflows involving interconnected nodes. It's designed to orchestrate complex tasks, including those involving external services like Large Language Models (LLMs) and web search.
 
+(Inspired by the PocketFlow - Agent)
 ## Core Concepts
 
 The framework is built around the concept of **Nodes** and **Flows**:
