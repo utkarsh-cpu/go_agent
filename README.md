@@ -1,6 +1,6 @@
 # Go Agentic Framework
 
-This Go library provides a framework for building agentic systems, allowing for the creation of modular, composable, and potentially asynchronous workflows involving interconnected nodes. It's designed to orchestrate complex tasks, including those involving external services like Large Language Models (LLMs) and web search.
+Go library provides a framework for building agentic systems, allowing for the creation of modular, composable, and potentially asynchronous workflows involving interconnected nodes. It's designed to orchestrate complex tasks, including those involving external services like Large Language Models (LLMs) and web search.
 
 ## Core Concepts
 
