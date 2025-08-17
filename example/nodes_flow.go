@@ -45,6 +45,7 @@ func (n DecideAction) Prep(shared agent.SharedData) any {
 }
 
 func (n DecideAction) Exec(inputs any) any {
+	fmt.Println("DEBUG: DecideAction.Exec called")
 	// Cast inputs to the expected type
 	inputSlice, ok := inputs.([]any)
 	if !ok || len(inputSlice) != 2 {

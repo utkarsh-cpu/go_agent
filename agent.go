@@ -56,6 +56,7 @@ func (node *BaseNode) run(shared SharedData) any {
 	return node.Post(shared, p, e)
 }
 func (node *BaseNode) Run(shared SharedData) any {
+	fmt.Println("DEBUG: BaseNode.Run called")
 	if node.Successors != nil {
 		log.Println("WARNING: Node won't run successors. Use Flow.")
 	}
@@ -100,6 +101,7 @@ func (n *Node) ExecFallback(prepRes any, err error) any {
 func (n *Node) exec(prepRes any) any {
 	for n.curRetry = 0; n.curRetry < n.maxRetries; n.curRetry++ {
 		var err error
+		var result any
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -111,8 +113,13 @@ func (n *Node) exec(prepRes any) any {
 					}
 				}
 			}()
-			n.Exec(prepRes)
+			result = n.Exec(prepRes)
 		}()
+
+		// If there's no error, return the result
+		if err == nil {
+			return result
+		}
 
 		// If this was the last retry, call fallback
 		if n.curRetry == n.maxRetries-1 {
@@ -194,7 +201,7 @@ func (f *Flow) orch(shared SharedData, params map[string]ParamsValue) any {
 	var lastAction any = nil
 
 	// Loop until we reach a node that doesn't have a successor
-	for curr.Successors != nil { // Check if current node is not empty
+	for len(curr.Successors) > 0 { // Check if current node has successors
 		// Set parameters on current node
 		curr.SetParams(p)
 
@@ -203,6 +210,18 @@ func (f *Flow) orch(shared SharedData, params map[string]ParamsValue) any {
 
 		// Get the next node based on the returned action
 		next := f.GetNextNode(curr, fmt.Sprintf("%v", lastAction))
+
+		// If next node has no successors and we've already run it, we'll exit after this iteration
+		if len(next.Successors) == 0 {
+			// Set parameters on the last node
+			next.SetParams(p)
+
+			// Run the last node and get the final action
+			lastAction = next.run(shared)
+
+			// Exit the loop
+			break
+		}
 
 		// Update current node
 		curr = next
@@ -219,6 +238,18 @@ func (f *Flow) run(shared SharedData) any {
 
 func (f *Flow) Post(shared SharedData, prepRes any, execRes any) any {
 	return execRes
+}
+
+// RunFlow is a new method that doesn't conflict with BaseNode.Run
+func (f *Flow) RunFlow(shared SharedData) any {
+	fmt.Println("DEBUG: Flow.RunFlow called")
+	return f.run(shared)
+}
+
+// Run is the original method that might be shadowed by BaseNode.Run
+func (f *Flow) Run(shared SharedData) any {
+	fmt.Println("DEBUG: Flow.Run called")
+	return f.RunFlow(shared)
 }
 
 type BatchFlow struct {

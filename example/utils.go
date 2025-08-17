@@ -34,6 +34,7 @@ const (
 // SentLlmPrompt sends a prompt to the LLM with retries.
 // It now accepts the model and context directly.
 func SentLlmPrompt(model *genai.GenerativeModel, ctx context.Context, prompt []genai.Part) string {
+	fmt.Println("DEBUG: SentLlmPrompt called")
 	if model == nil || ctx == nil {
 		log.Println("SentLlmPrompt: Received nil model or context")
 		return "" // Return empty string indicating an error

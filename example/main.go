@@ -32,6 +32,7 @@ func main() {
 
 	// Run the flow
 	fmt.Println("Starting agent flow...")
+	fmt.Printf("DEBUG: Flow type: %T\n", flow)
 	result := flow.Run(shared)
 	fmt.Printf("Flow completed with result: %v\n", result)
 
