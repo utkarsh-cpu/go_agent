@@ -1,697 +1,670 @@
 package go_agent
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 )
 
-// BaseNode represents the basic node structure in the agent framework
+type ParamsValue interface{}
+type SharedData map[string]interface{}
 type BaseNode struct {
-	params     map[string]interface{}
-	successors map[string]interface{}
+	Params     map[string]ParamsValue
+	Successors map[string]BaseNode
 }
 
-// NewBaseNode creates a new BaseNode instance
-func NewBaseNode() *BaseNode {
-	return &BaseNode{
-		params:     make(map[string]interface{}),
-		successors: make(map[string]interface{}),
-	}
+func (node *BaseNode) Init() {
+	node.Params = make(map[string]ParamsValue)
+	node.Successors = make(map[string]BaseNode)
 }
-
-// SetParams sets the parameters for the node
-func (b *BaseNode) SetParams(params map[string]interface{}) {
-	b.params = params
+func (node *BaseNode) SetParams(params map[string]ParamsValue) {
+	node.Params = params
 }
-
-// Next adds a successor node for a specific action
-func (b *BaseNode) Next(node interface{}, action string) interface{} {
+func (node *BaseNode) Next(nextNode BaseNode, action string) BaseNode {
 	if action == "" {
 		action = "default"
 	}
-	if _, exists := b.successors[action]; exists {
-		log.Printf("Warning: Overwriting successor for action '%s'", action)
+	if node.Successors == nil {
+		node.Successors = make(map[string]BaseNode)
 	}
-	b.successors[action] = node
-	return node
-}
-
-// Prep prepares the node for execution
-func (b *BaseNode) Prep(shared map[string]interface{}) interface{} {
-	return nil
-}
-
-// Exec executes the node's main functionality
-func (b *BaseNode) Exec(prepRes interface{}) interface{} {
-	return nil
-}
-
-// Post processes the results after execution
-func (b *BaseNode) Post(shared map[string]interface{}, prepRes interface{}, execRes interface{}) interface{} {
-	return nil
-}
-
-// execInternal executes the node internally
-func (b *BaseNode) execInternal(prepRes interface{}) interface{} {
-	return b.Exec(prepRes)
-}
-
-// Run executes the node's full lifecycle
-func (b *BaseNode) Run(shared map[string]interface{}) interface{} {
-	if len(b.successors) > 0 {
-		log.Println("Warning: Node won't run successors. Use Flow.")
+	if _, found := node.Successors[action]; found {
+		log.Printf("WARNING: Overwriting successor for action '%s'", action)
 	}
-	return b.runInternal(shared)
+	node.Successors[action] = nextNode
+	return nextNode
 }
 
-// runInternal runs the node's internal execution flow
-func (b *BaseNode) runInternal(shared map[string]interface{}) interface{} {
-	prepRes := b.Prep(shared)
-	execRes := b.execInternal(prepRes)
-	return b.Post(shared, prepRes, execRes)
+func (node *BaseNode) Prep(shared SharedData) any {
+	return nil
 }
 
-// ConditionalTransition represents a transition with a specific action
-type conditionalTransition struct {
-	src    *BaseNode
+func (node *BaseNode) Exec(prepRes any) any {
+	return nil
+}
+
+func (node *BaseNode) Post(shared SharedData, prepRes any, execRes any) any {
+	return nil
+}
+
+func (node *BaseNode) exec(prepRes any) any {
+	return node.Exec(prepRes)
+}
+func (node *BaseNode) run(shared SharedData) any {
+	p := node.Prep(shared)
+	e := node.exec(p)
+	return node.Post(shared, p, e)
+}
+func (node *BaseNode) Run(shared SharedData) any {
+	if node.Successors != nil {
+		log.Println("WARNING: Node won't run successors. Use Flow.")
+	}
+	return node.run(shared)
+}
+
+func (node *BaseNode) rshift(other BaseNode) BaseNode {
+	return node.Next(other, "")
+}
+
+func (node *BaseNode) sub(action string) _ConditionalTransition {
+	return _ConditionalTransition{source: *node, action: action}
+}
+
+type _ConditionalTransition struct {
+	source BaseNode
 	action string
 }
 
-// NewConditionalTransition creates a new conditional transition
-func newConditionalTransition(src *BaseNode, action string) *conditionalTransition {
-	return &conditionalTransition{
-		src:    src,
-		action: action,
-	}
+func (T _ConditionalTransition) rshift(target BaseNode) any {
+	return T.source.Next(target, T.action)
+
 }
 
-// Next connects the transition to a target node
-func (c *conditionalTransition) Next(target interface{}) interface{} {
-	return c.src.Next(target, c.action)
-}
-
-// Node extends BaseNode with retry capabilities
 type Node struct {
-	*BaseNode
+	BaseNode
 	maxRetries int
-	wait       time.Duration
+	wait       interface{} // Can be int or float64
 	curRetry   int
 }
 
-// NewNode creates a new Node instance
-func NewNode(maxRetries int, wait time.Duration) *Node {
-	return &Node{
-		BaseNode:   NewBaseNode(),
-		maxRetries: maxRetries,
-		wait:       wait,
-	}
+func (n *Node) Init(maxRetries int, wait interface{}) {
+	n.BaseNode.Init()
+	n.maxRetries = maxRetries
+	n.wait = wait
 }
 
-// ExecFallback handles execution failures
-func (n *Node) ExecFallback(prepRes interface{}, err error) interface{} {
+func (n Node) ExecFallback(prepRes any, err error) any {
 	return err
 }
 
-// ExecInternal implements retry logic for execution
-func (n *Node) execInternal(prepRes interface{}) interface{} {
+func (n Node) exec(prepRes any) any {
 	for n.curRetry = 0; n.curRetry < n.maxRetries; n.curRetry++ {
 		var err error
-		defer func() {
-			if r := recover(); r != nil {
-				switch v := r.(type) {
-				case error:
-					err = v
-				default:
-					err = fmt.Errorf("%v", v)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					switch v := r.(type) {
+					case error:
+						err = v
+					default:
+						err = fmt.Errorf("%v", v)
+					}
 				}
-			}
+			}()
+			n.Exec(prepRes)
 		}()
 
-		result := n.Exec(prepRes)
-		if err == nil {
-			return result
-		}
-
+		// If this was the last retry, call fallback
 		if n.curRetry == n.maxRetries-1 {
 			return n.ExecFallback(prepRes, err)
 		}
 
-		if n.wait > 0 {
-			time.Sleep(n.wait)
+		// Sleep before next retry if wait > 0
+		switch w := n.wait.(type) {
+		case int:
+			if w > 0 {
+				time.Sleep(time.Duration(w) * time.Millisecond)
+			}
+		case float64:
+			if w > 0 {
+				time.Sleep(time.Duration(w) * time.Millisecond)
+			}
 		}
 	}
 	return nil
 }
 
-// BatchNode processes items in batches
 type BatchNode struct {
-	*Node
+	Node
 }
 
-// NewBatchNode creates a new BatchNode instance
-func NewBatchNode(maxRetries int, wait time.Duration) *BatchNode {
-	return &BatchNode{
-		Node: NewNode(maxRetries, wait),
-	}
-}
-
-// ExecInternal processes each item in the batch
-func (b *BatchNode) execInternal(items interface{}) interface{} {
-	if items == nil {
-		return []interface{}{}
+func (n BatchNode) exec(prepRes any) any {
+	// Implementation for batch processing
+	items, ok := prepRes.([]any)
+	if !ok || items == nil {
+		items = []any{}
 	}
 
-	itemsSlice, ok := items.([]interface{})
-	if !ok {
-		return []interface{}{}
-	}
-
-	results := make([]interface{}, len(itemsSlice))
-	for i, item := range itemsSlice {
-		results[i] = b.Node.execInternal(item)
+	var results []any
+	for _, item := range items {
+		results = append(results, n.Node.exec(item))
 	}
 	return results
 }
 
-// Flow orchestrates the execution of multiple nodes
 type Flow struct {
-	*BaseNode
-	startNode interface{}
+	BaseNode
+	start BaseNode
 }
 
-// NewFlow creates a new Flow instance
-func NewFlow(start interface{}) *Flow {
-	return &Flow{
-		BaseNode:  NewBaseNode(),
-		startNode: start,
-	}
+func (f *Flow) Init(start BaseNode) {
+	f.BaseNode.Init()
+	f.start = start
 }
 
-// Start sets the starting node for the flow
-func (f *Flow) Start(start interface{}) interface{} {
-	f.startNode = start
-	return start
+func (f *Flow) Start(start BaseNode) BaseNode {
+	f.start = start
+	return f.start
 }
-
-// GetNextNode determines the next node based on the current node and action
-func (f *Flow) GetNextNode(curr *BaseNode, action string) interface{} {
+func (f *Flow) GetNextNode(curr BaseNode, action string) BaseNode {
 	if action == "" {
 		action = "default"
 	}
-
-	next, exists := curr.successors[action]
-	if !exists && len(curr.successors) > 0 {
+	next, found := curr.Successors[action]
+	if !found && len(curr.Successors) > 0 {
 		var actions []string
-		for k := range curr.successors {
-			actions = append(actions, k)
+		for a := range curr.Successors {
+			actions = append(actions, a)
 		}
-		log.Printf("Warning: Flow ends: '%s' not found in %v", action, actions)
+		log.Printf("WARNING: Flow ends: '%s' not found in %v", action, actions)
 	}
 	return next
 }
 
-// orchestrate manages the flow of execution through nodes
-func (f *Flow) orchestrate(shared map[string]interface{}, params map[string]interface{}) interface{} {
-	if f.startNode == nil {
-		return nil
+func (f *Flow) orch(shared SharedData, params map[string]ParamsValue) any {
+	// Initialize current node with a copy of the start node
+	curr := f.start
+
+	// Set parameters (use provided params or default to Flow's params)
+	p := params
+	if p == nil {
+		p = f.Params
 	}
 
-	if params == nil {
-		params = make(map[string]interface{})
-		for k, v := range f.params {
-			params[k] = v
-		}
-	}
+	var lastAction any = nil
 
-	// Deep copy of startNode would be implemented here
-	// For simplicity, we're using the original node
-	curr, ok := f.startNode.(*BaseNode)
-	if !ok {
-		return nil
-	}
+	// Loop until we reach a node that doesn't have a successor
+	for curr.Successors != nil { // Check if current node is not empty
+		// Set parameters on current node
+		curr.SetParams(p)
 
-	var lastAction interface{}
-	for curr != nil {
-		curr.SetParams(params)
-		lastAction = curr.runInternal(shared)
+		// Run the current node and get the action
+		lastAction = curr.run(shared)
 
-		nextNode := f.GetNextNode(curr, fmt.Sprintf("%v", lastAction))
-		if nextNode == nil {
-			break
-		}
+		// Get the next node based on the returned action
+		next := f.GetNextNode(curr, fmt.Sprintf("%v", lastAction))
 
-		nextBaseNode, ok := nextNode.(*BaseNode)
-		if !ok {
-			break
-		}
-		curr = nextBaseNode
+		// Update current node
+		curr = next
 	}
 
 	return lastAction
 }
 
-// runInternal executes the flow
-func (f *Flow) runInternal(shared map[string]interface{}) interface{} {
-	prepRes := f.Prep(shared)
-	orchRes := f.orchestrate(shared, nil)
-	return f.Post(shared, prepRes, orchRes)
+func (f *Flow) run(shared SharedData) any {
+	p := f.Prep(shared)
+	o := f.orch(shared, nil)
+	return f.Post(shared, p, o)
 }
 
-// Post processes the results after flow execution
-func (f *Flow) Post(shared map[string]interface{}, prepRes interface{}, execRes interface{}) interface{} {
+func (f *Flow) Post(shared SharedData, prepRes any, execRes any) any {
 	return execRes
 }
 
-// BatchFlow processes batches of inputs through a flow
 type BatchFlow struct {
-	*Flow
+	Flow
 }
 
-// NewBatchFlow creates a new BatchFlow instance
-func NewBatchFlow(start interface{}) *BatchFlow {
-	return &BatchFlow{
-		Flow: NewFlow(start),
-	}
-}
-
-// runInternal processes each batch item through the flow
-func (b *BatchFlow) runInternal(shared map[string]interface{}) interface{} {
-	prepRes := b.Prep(shared)
-	prepSlice, ok := prepRes.([]interface{})
-	if !ok || prepSlice == nil {
-		prepSlice = []interface{}{}
+func (bf *BatchFlow) run(shared SharedData) any {
+	pr := bf.Prep(shared)
+	// If pr is nil, use an empty slice instead (equivalent to Python's "or []")
+	if pr == nil {
+		pr = []any{}
 	}
 
-	for _, bp := range prepSlice {
-		bpMap, ok := bp.(map[string]interface{})
+	// Process each batch parameter
+	batchParams, ok := pr.([]any)
+	if !ok {
+		// If pr is not a slice, make it a single-item slice
+		batchParams = []any{pr}
+	}
+
+	var lastResult any
+	for _, bp := range batchParams {
+		// Convert bp to map if possible
+		bpMap, ok := bp.(map[string]ParamsValue)
 		if !ok {
-			continue
+			// If bp is not a map, continue with empty params
+			bpMap = make(map[string]ParamsValue)
 		}
 
-		params := make(map[string]interface{})
-		for k, v := range b.params {
-			params[k] = v
+		// Merge parameters (equivalent to Python's {**self.params, **bp})
+		mergedParams := make(map[string]ParamsValue)
+		// First copy bf.Params
+		for k, v := range bf.Params {
+			mergedParams[k] = v
 		}
+		// Then override with bp values
 		for k, v := range bpMap {
-			params[k] = v
+			mergedParams[k] = v
 		}
 
-		b.orchestrate(shared, params)
+		// Call orch with merged parameters
+		lastResult = bf.orch(shared, mergedParams)
 	}
 
-	return b.Post(shared, prepRes, nil)
+	// Return the post-processed result
+	return bf.Post(shared, pr, lastResult)
 }
 
-// AsyncNode represents a node that can be executed asynchronously
+// AsyncNodeInterface defines the interface for async nodes
+type AsyncNodeInterface interface {
+	PrepAsync(ctx context.Context, shared SharedData) (any, error)
+	ExecAsync(ctx context.Context, prepRes any) (any, error)
+	ExecFallbackAsync(ctx context.Context, prepRes any, err error) (any, error)
+	PostAsync(ctx context.Context, shared SharedData, prepRes any, execRes any) (any, error)
+	RunAsync(ctx context.Context, shared SharedData) (any, error)
+}
+
+// AsyncNode is the asynchronous version of Node
 type AsyncNode struct {
-	*Node
+	Node
+	// Custom handlers for async operations
+	prepAsyncFunc         func(ctx context.Context, shared SharedData) (any, error)
+	execAsyncFunc         func(ctx context.Context, prepRes any) (any, error)
+	execFallbackAsyncFunc func(ctx context.Context, prepRes any, err error) (any, error)
+	postAsyncFunc         func(ctx context.Context, shared SharedData, prepRes any, execRes any) (any, error)
 }
 
-// NewAsyncNode creates a new AsyncNode instance
-func NewAsyncNode(maxRetries int, wait time.Duration) *AsyncNode {
-	return &AsyncNode{
-		Node: NewNode(maxRetries, wait),
+// NewAsyncNode creates a new AsyncNode with the given retry settings
+func NewAsyncNode(maxRetries int, wait interface{}) *AsyncNode {
+	node := &AsyncNode{}
+	node.Node.Init(maxRetries, wait)
+	return node
+}
+
+// SetPrepAsync sets the PrepAsync function
+func (n *AsyncNode) SetPrepAsync(f func(ctx context.Context, shared SharedData) (any, error)) *AsyncNode {
+	n.prepAsyncFunc = f
+	return n
+}
+
+// SetExecAsync sets the ExecAsync function
+func (n *AsyncNode) SetExecAsync(f func(ctx context.Context, prepRes any) (any, error)) *AsyncNode {
+	n.execAsyncFunc = f
+	return n
+}
+
+// SetExecFallbackAsync sets the ExecFallbackAsync function
+func (n *AsyncNode) SetExecFallbackAsync(f func(ctx context.Context, prepRes any, err error) (any, error)) *AsyncNode {
+	n.execFallbackAsyncFunc = f
+	return n
+}
+
+// SetPostAsync sets the PostAsync function
+func (n *AsyncNode) SetPostAsync(f func(ctx context.Context, shared SharedData, prepRes any, execRes any) (any, error)) *AsyncNode {
+	n.postAsyncFunc = f
+	return n
+}
+
+// PrepAsync is the asynchronous version of Prep
+func (n *AsyncNode) PrepAsync(ctx context.Context, shared SharedData) (any, error) {
+	if n.prepAsyncFunc != nil {
+		return n.prepAsyncFunc(ctx, shared)
 	}
+	return n.Prep(shared), nil
 }
 
-// PrepAsync prepares the node asynchronously
-func (a *AsyncNode) PrepAsync(shared map[string]interface{}) interface{} {
-	return nil
+// ExecAsync is the asynchronous version of Exec
+func (n *AsyncNode) ExecAsync(ctx context.Context, prepRes any) (any, error) {
+	if n.execAsyncFunc != nil {
+		return n.execAsyncFunc(ctx, prepRes)
+	}
+	return n.Exec(prepRes), nil
 }
 
-// ExecAsync executes the node asynchronously
-func (a *AsyncNode) ExecAsync(prepRes interface{}) interface{} {
-	return nil
+// ExecFallbackAsync is the asynchronous version of ExecFallback
+func (n *AsyncNode) ExecFallbackAsync(ctx context.Context, prepRes any, err error) (any, error) {
+	if n.execFallbackAsyncFunc != nil {
+		return n.execFallbackAsyncFunc(ctx, prepRes, err)
+	}
+	return n.ExecFallback(prepRes, err), nil
 }
 
-// ExecFallbackAsync handles execution failures asynchronously
-func (a *AsyncNode) ExecFallbackAsync(prepRes interface{}, err error) interface{} {
-	return err
+// PostAsync is the asynchronous version of Post
+func (n *AsyncNode) PostAsync(ctx context.Context, shared SharedData, prepRes any, execRes any) (any, error) {
+	if n.postAsyncFunc != nil {
+		return n.postAsyncFunc(ctx, shared, prepRes, execRes)
+	}
+	return n.Post(shared, prepRes, execRes), nil
 }
 
-// PostAsync processes results asynchronously
-func (a *AsyncNode) PostAsync(shared map[string]interface{}, prepRes interface{}, execRes interface{}) interface{} {
-	return nil
-}
-
-// RunAsync runs the node asynchronously
-func (a *AsyncNode) RunAsync(shared map[string]interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		if len(a.successors) > 0 {
-			log.Println("Warning: Node won't run successors. Use AsyncFlow.")
+// execAsync is the asynchronous version of exec
+func (n *AsyncNode) execAsync(ctx context.Context, prepRes any) (any, error) {
+	for n.curRetry = 0; n.curRetry < n.maxRetries; n.curRetry++ {
+		result, err := n.ExecAsync(ctx, prepRes)
+		if err == nil {
+			// If no error, return the result
+			return result, nil
 		}
-		res := a.runAsyncInternal(shared)
-		result <- <-res
-	}()
-	return result
-}
 
-// RunAsyncInternal runs the node's internal async execution flow
-func (a *AsyncNode) runAsyncInternal(shared map[string]interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		prepRes := a.PrepAsync(shared)
-		execResChan := a.execAsyncInternal(prepRes)
-		execRes := <-execResChan
-		postRes := a.PostAsync(shared, prepRes, execRes)
-		result <- postRes
-	}()
-	return result
-}
+		// If this was the last retry, call fallback
+		if n.curRetry == n.maxRetries-1 {
+			return n.ExecFallbackAsync(ctx, prepRes, err)
+		}
 
-// execAsyncInternal implements async retry logic
-func (a *AsyncNode) execAsyncInternal(prepRes interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		for i := 0; i < a.maxRetries; i++ {
-			var err error
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						switch v := r.(type) {
-						case error:
-							err = v
-						default:
-							err = fmt.Errorf("%v", v)
-						}
-					}
-				}()
-				res := a.ExecAsync(prepRes)
-				if err == nil {
-					result <- res
-					return
+		// Sleep before next retry if wait > 0
+		switch w := n.wait.(type) {
+		case int:
+			if w > 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(w) * time.Millisecond):
 				}
-			}()
-
-			if err == nil {
-				return
 			}
-
-			if i == a.maxRetries-1 {
-				result <- a.ExecFallbackAsync(prepRes, err)
-				return
-			}
-
-			if a.wait > 0 {
-				time.Sleep(a.wait)
+		case float64:
+			if w > 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(w) * time.Millisecond):
+				}
 			}
 		}
-	}()
-	return result
+	}
+
+	// This should never be reached, but just in case
+	return nil, fmt.Errorf("max retries exceeded")
 }
 
-// RunInternal overrides the synchronous run method
-func (a *AsyncNode) runInternal(shared map[string]interface{}) interface{} {
-	return errors.New("use RunAsync")
+// RunAsync is the asynchronous version of Run
+func (n *AsyncNode) RunAsync(ctx context.Context, shared SharedData) (any, error) {
+	if n.Successors != nil {
+		log.Println("WARNING: Node won't run successors. Use AsyncFlow.")
+	}
+	return n.runAsync(ctx, shared)
 }
 
-// AsyncBatchNode processes items in batches asynchronously
+// runAsync is the asynchronous version of run
+func (n *AsyncNode) runAsync(ctx context.Context, shared SharedData) (any, error) {
+	p, err := n.PrepAsync(ctx, shared)
+	if err != nil {
+		return nil, err
+	}
+
+	e, err := n.execAsync(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	return n.PostAsync(ctx, shared, p, e)
+}
+
+// Run overrides the synchronous Run method to prevent its use
+func (n *AsyncNode) Run(shared SharedData) any {
+	log.Fatal("Use RunAsync instead of Run for AsyncNode")
+	return nil
+}
+
+// AsyncBatchNode is the asynchronous version of BatchNode
 type AsyncBatchNode struct {
-	*AsyncNode
+	AsyncNode
+	BatchNode
 }
 
-// NewAsyncBatchNode creates a new AsyncBatchNode instance
-func NewAsyncBatchNode(maxRetries int, wait time.Duration) *AsyncBatchNode {
-	return &AsyncBatchNode{
-		AsyncNode: NewAsyncNode(maxRetries, wait),
+// execAsync overrides AsyncNode's execAsync to handle batch processing
+func (n AsyncBatchNode) execAsync(ctx context.Context, prepRes any) (any, error) {
+	items, ok := prepRes.([]any)
+	if !ok || items == nil {
+		items = []any{}
 	}
+
+	var results []any
+	for _, item := range items {
+		result, err := n.AsyncNode.execAsync(ctx, item)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
-// execAsyncInternal processes each item in the batch asynchronously
-func (a *AsyncBatchNode) execAsyncInternal(items interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		if items == nil {
-			result <- []interface{}{}
-			return
-		}
-
-		itemsSlice, ok := items.([]interface{})
-		if !ok {
-			result <- []interface{}{}
-			return
-		}
-
-		results := make([]interface{}, len(itemsSlice))
-		for i, item := range itemsSlice {
-			resChan := a.AsyncNode.execAsyncInternal(item)
-			results[i] = <-resChan
-		}
-		result <- results
-	}()
-	return result
-}
-
-// AsyncParallelBatchNode processes items in parallel batches
+// AsyncParallelBatchNode processes items in parallel
 type AsyncParallelBatchNode struct {
-	*AsyncNode
+	AsyncNode
+	BatchNode
 }
 
-// NewAsyncParallelBatchNode creates a new AsyncParallelBatchNode instance
-func NewAsyncParallelBatchNode(maxRetries int, wait time.Duration) *AsyncParallelBatchNode {
-	return &AsyncParallelBatchNode{
-		AsyncNode: NewAsyncNode(maxRetries, wait),
+// execAsync overrides AsyncNode's execAsync to handle parallel batch processing
+func (n AsyncParallelBatchNode) execAsync(ctx context.Context, prepRes any) (any, error) {
+	items, ok := prepRes.([]any)
+	if !ok || items == nil {
+		items = []any{}
 	}
-}
 
-// execAsyncInternal processes items in parallel
-func (a *AsyncParallelBatchNode) execAsyncInternal(items interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		if items == nil {
-			result <- []interface{}{}
-			return
-		}
+	results := make([]any, len(items))
+	errCh := make(chan error, len(items))
 
-		itemsSlice, ok := items.([]interface{})
-		if !ok {
-			result <- []interface{}{}
-			return
-		}
+	// Create a new context that will be canceled if any goroutine fails
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-		var wg sync.WaitGroup
-		results := make([]interface{}, len(itemsSlice))
-		resultChans := make([]chan interface{}, len(itemsSlice))
-
-		for i, item := range itemsSlice {
-			wg.Add(1)
-			resultChans[i] = make(chan interface{}, 1)
-			go func(idx int, itm interface{}) {
-				defer wg.Done()
-				resChan := a.AsyncNode.execAsyncInternal(itm)
-				resultChans[idx] <- <-resChan
-			}(i, item)
-		}
-
-		go func() {
-			wg.Wait()
-			for i, ch := range resultChans {
-				results[i] = <-ch
-				close(ch)
+	// Process each item in parallel
+	for i, item := range items {
+		go func(index int, itemData any) {
+			result, err := n.AsyncNode.execAsync(ctx, itemData)
+			if err != nil {
+				errCh <- err
+				cancel() // Cancel other goroutines
+				return
 			}
-			result <- results
-		}()
-	}()
-	return result
+			results[index] = result
+			errCh <- nil
+		}(i, item)
+	}
+
+	// Wait for all goroutines to complete
+	for range items {
+		if err := <-errCh; err != nil {
+			return nil, err
+		}
+	}
+
+	return results, nil
 }
 
-// AsyncFlow orchestrates async node execution
+// AsyncFlow is the asynchronous version of Flow
 type AsyncFlow struct {
-	*Flow
-	*AsyncNode
+	Flow
+	AsyncNode
 }
 
-// NewAsyncFlow creates a new AsyncFlow instance
-func NewAsyncFlow(start interface{}) *AsyncFlow {
-	return &AsyncFlow{
-		Flow:      NewFlow(start),
-		AsyncNode: NewAsyncNode(1, 0),
+// orchAsync is the asynchronous version of orch
+func (f AsyncFlow) orchAsync(ctx context.Context, shared SharedData, params map[string]ParamsValue) (any, error) {
+	// Initialize current node with a copy of the start node
+	curr := f.start
+
+	// Set parameters (use provided params or default to Flow's params)
+	p := params
+	if p == nil {
+		p = f.Params
 	}
+
+	var lastAction any = nil
+
+	// Loop until we reach a node that doesn't have a successor
+	for curr.Successors != nil {
+		// Set parameters on current node
+		curr.SetParams(p)
+
+		// Run the current node and get the action
+		// For simplicity, we'll just run the node synchronously
+		// In a real implementation, you would need to check if the node is an async node
+		// and call the appropriate method
+		lastAction = curr.run(shared)
+
+		// Get the next node based on the returned action
+		next := f.GetNextNode(curr, fmt.Sprintf("%v", lastAction))
+
+		// Update current node
+		curr = next
+	}
+
+	return lastAction, nil
 }
 
-// orchestrateAsync manages the async flow of execution
-func (a *AsyncFlow) orchestrateAsync(shared map[string]interface{}, params map[string]interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		if a.startNode == nil {
-			result <- nil
-			return
-		}
+// runAsync is the asynchronous version of run
+func (f AsyncFlow) runAsync(ctx context.Context, shared SharedData) (any, error) {
+	p, err := f.PrepAsync(ctx, shared)
+	if err != nil {
+		return nil, err
+	}
 
-		if params == nil {
-			params = make(map[string]interface{})
-			for k, v := range a.params {
-				params[k] = v
-			}
-		}
+	o, err := f.orchAsync(ctx, shared, nil)
+	if err != nil {
+		return nil, err
+	}
 
-		// Deep copy of startNode would be implemented here
-		// For simplicity, we're using the original node
-		curr, ok := a.startNode.(*BaseNode)
-		if !ok {
-			result <- nil
-			return
-		}
-
-		var lastAction interface{}
-		for curr != nil {
-			curr.SetParams(params)
-
-			// Check if current node is async
-			if asyncNode, isAsync := interface{}(curr).(*AsyncNode); isAsync {
-				resChan := asyncNode.runAsyncInternal(shared)
-				lastAction = <-resChan
-			} else {
-				lastAction = curr.runInternal(shared)
-			}
-
-			nextNode := a.GetNextNode(curr, fmt.Sprintf("%v", lastAction))
-			if nextNode == nil {
-				break
-			}
-
-			nextBaseNode, ok := nextNode.(*BaseNode)
-			if !ok {
-				break
-			}
-			curr = nextBaseNode
-		}
-
-		result <- lastAction
-	}()
-	return result
+	return f.PostAsync(ctx, shared, p, o)
 }
 
-// runAsyncInternal executes the async flow
-func (a *AsyncFlow) runAsyncInternal(shared map[string]interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		prepResChan := a.PrepAsync(shared)
-		prepRes := prepResChan
-		orchResChan := a.orchestrateAsync(shared, nil)
-		orchRes := <-orchResChan
-		postResChan := a.PostAsync(shared, prepRes, orchRes)
-		result <- postResChan
-	}()
-	return result
+// PostAsync overrides AsyncNode's PostAsync
+func (f AsyncFlow) PostAsync(ctx context.Context, shared SharedData, prepRes any, execRes any) (any, error) {
+	return execRes, nil
 }
 
-// PostAsync processes results after async flow execution
-func (a *AsyncFlow) PostAsync(shared map[string]interface{}, prepRes interface{}, execRes interface{}) interface{} {
-	return execRes
-}
-
-// AsyncBatchFlow processes batches asynchronously
+// AsyncBatchFlow is the asynchronous version of BatchFlow
 type AsyncBatchFlow struct {
-	*AsyncFlow
+	AsyncFlow
 }
 
-// NewAsyncBatchFlow creates a new AsyncBatchFlow instance
-func NewAsyncBatchFlow(start interface{}) *AsyncBatchFlow {
-	return &AsyncBatchFlow{
-		AsyncFlow: NewAsyncFlow(start),
+// runAsync overrides AsyncFlow's runAsync to handle batch processing
+func (bf *AsyncBatchFlow) runAsync(ctx context.Context, shared SharedData) (any, error) {
+	pr, err := bf.PrepAsync(ctx, shared)
+	if err != nil {
+		return nil, err
 	}
-}
 
-// runAsyncInternal processes each batch item through the async flow
-func (a *AsyncBatchFlow) runAsyncInternal(shared map[string]interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		prepResChan := a.PrepAsync(shared)
-		prepRes := prepResChan
+	// If pr is nil, use an empty slice instead
+	if pr == nil {
+		pr = []any{}
+	}
 
-		prepSlice, ok := prepRes.([]interface{})
-		if !ok || prepSlice == nil {
-			prepSlice = []interface{}{}
+	// Process each batch parameter
+	batchParams, ok := pr.([]any)
+	if !ok {
+		// If pr is not a slice, make it a single-item slice
+		batchParams = []any{pr}
+	}
+
+	var lastResult any
+	for _, bp := range batchParams {
+		// Convert bp to map if possible
+		bpMap, ok := bp.(map[string]ParamsValue)
+		if !ok {
+			// If bp is not a map, continue with empty params
+			bpMap = make(map[string]ParamsValue)
 		}
 
-		for _, bp := range prepSlice {
-			bpMap, ok := bp.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			params := make(map[string]interface{})
-			for k, v := range a.params {
-				params[k] = v
-			}
-			for k, v := range bpMap {
-				params[k] = v
-			}
-
-			orchResChan := a.orchestrateAsync(shared, params)
-			<-orchResChan // Wait for completion but discard result
+		// Merge parameters
+		mergedParams := make(map[string]ParamsValue)
+		// First copy bf.AsyncFlow.Params
+		for k, v := range bf.AsyncFlow.Params {
+			mergedParams[k] = v
+		}
+		// Then override with bp values
+		for k, v := range bpMap {
+			mergedParams[k] = v
 		}
 
-		postResChan := a.PostAsync(shared, prepRes, nil)
-		result <- postResChan
-	}()
-	return result
+		// Call orchAsync with merged parameters
+		var err error
+		lastResult, err = bf.orchAsync(ctx, shared, mergedParams)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Return the post-processed result
+	return bf.PostAsync(ctx, shared, pr, lastResult)
 }
 
-// AsyncParallelBatchFlow processes batches in parallel
+// AsyncParallelBatchFlow processes batch items in parallel
 type AsyncParallelBatchFlow struct {
-	*AsyncFlow
+	AsyncFlow
 }
 
-// NewAsyncParallelBatchFlow creates a new AsyncParallelBatchFlow instance
-func NewAsyncParallelBatchFlow(start interface{}) *AsyncParallelBatchFlow {
-	return &AsyncParallelBatchFlow{
-		AsyncFlow: NewAsyncFlow(start),
+// runAsync overrides AsyncFlow's runAsync to handle parallel batch processing
+func (bf *AsyncParallelBatchFlow) runAsync(ctx context.Context, shared SharedData) (any, error) {
+	pr, err := bf.PrepAsync(ctx, shared)
+	if err != nil {
+		return nil, err
 	}
-}
 
-// runAsyncInternal processes batch items in parallel
-func (a *AsyncParallelBatchFlow) runAsyncInternal(shared map[string]interface{}) chan interface{} {
-	result := make(chan interface{}, 1)
-	go func() {
-		defer close(result)
-		prepResChan := a.PrepAsync(shared)
-		prepRes := prepResChan
+	// If pr is nil, use an empty slice instead
+	if pr == nil {
+		pr = []any{}
+	}
 
-		prepSlice, ok := prepRes.([]interface{})
-		if !ok || prepSlice == nil {
-			prepSlice = []interface{}{}
+	// Process each batch parameter
+	batchParams, ok := pr.([]any)
+	if !ok {
+		// If pr is not a slice, make it a single-item slice
+		batchParams = []any{pr}
+	}
+
+	// Create a new context that will be canceled if any goroutine fails
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, len(batchParams))
+
+	// Process each batch parameter in parallel
+	for _, bp := range batchParams {
+		go func(batchParam any) {
+			// Convert bp to map if possible
+			bpMap, ok := batchParam.(map[string]ParamsValue)
+			if !ok {
+				// If bp is not a map, continue with empty params
+				bpMap = make(map[string]ParamsValue)
+			}
+
+			// Merge parameters
+			mergedParams := make(map[string]ParamsValue)
+			// First copy bf.AsyncFlow.Params
+			for k, v := range bf.AsyncFlow.Params {
+				mergedParams[k] = v
+			}
+			// Then override with bp values
+			for k, v := range bpMap {
+				mergedParams[k] = v
+			}
+
+			// Call orchAsync with merged parameters
+			_, err := bf.orchAsync(ctx, shared, mergedParams)
+			errCh <- err
+		}(bp)
+	}
+
+	// Wait for all goroutines to complete
+	for range batchParams {
+		if err := <-errCh; err != nil {
+			return nil, err
 		}
+	}
 
-		var wg sync.WaitGroup
-		for _, bp := range prepSlice {
-			wg.Add(1)
-			go func(batchParams interface{}) {
-				defer wg.Done()
-				bpMap, ok := batchParams.(map[string]interface{})
-				if !ok {
-					return
-				}
-
-				params := make(map[string]interface{})
-				for k, v := range a.params {
-					params[k] = v
-				}
-				for k, v := range bpMap {
-					params[k] = v
-				}
-
-				orchResChan := a.orchestrateAsync(shared, params)
-				<-orchResChan // Wait for completion but discard result
-			}(bp)
-		}
-
-		wg.Wait()
-		postResChan := a.PostAsync(shared, prepRes, nil)
-		result <- postResChan
-	}()
-	return result
+	// Return the post-processed result
+	return bf.PostAsync(ctx, shared, pr, nil)
 }
