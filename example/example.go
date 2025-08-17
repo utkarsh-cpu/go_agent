@@ -508,7 +508,7 @@ func RunResearchAgent(question string) string {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		log.Println("Warning: GEMINI_API_KEY environment variable not set. Using dummy values.")
-		apiKey = "AIzaSyAzpbvK0TLBIo_COSzpIlR9z_10IbcrABU"
+		apiKey = ""
 	}
 	modelName := "gemini-2.0-flash"
 
