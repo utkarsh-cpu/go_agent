@@ -5,7 +5,7 @@ go 1.24.2
 require (
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
 	github.com/google/generative-ai-go v0.19.0
-	github.com/utkarsh-cpu/go_agent v1.0.0
+	github.com/utkarsh-cpu/go_agent v1.0.2
 	google.golang.org/api v0.228.0
 	gopkg.in/yaml.v2 v2.4.0
 )
