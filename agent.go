@@ -93,11 +93,11 @@ func (n *Node) Init(maxRetries int, wait interface{}) {
 	n.wait = wait
 }
 
-func (n Node) ExecFallback(prepRes any, err error) any {
+func (n *Node) ExecFallback(prepRes any, err error) any {
 	return err
 }
 
-func (n Node) exec(prepRes any) any {
+func (n *Node) exec(prepRes any) any {
 	for n.curRetry = 0; n.curRetry < n.maxRetries; n.curRetry++ {
 		var err error
 		func() {
@@ -138,7 +138,7 @@ type BatchNode struct {
 	Node
 }
 
-func (n BatchNode) exec(prepRes any) any {
+func (n *BatchNode) exec(prepRes any) any {
 	// Implementation for batch processing
 	items, ok := prepRes.([]any)
 	if !ok || items == nil {
